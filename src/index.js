@@ -16,8 +16,8 @@ import chalk from 'chalk';
 import { File } from 'megajs';
 import { fileURLToPath } from 'url';
 
-import config from './config.cjs';
-import autoreact from './lib/autoreact.cjs';
+import config from '../config.cjs';
+import autoreact from '../lib/autoreact.cjs';
 import { Handler, Callupdate, GroupUpdate } from './event/index.js';
 
 const { emojis, doReact } = autoreact;
