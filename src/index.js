@@ -2,165 +2,158 @@ import dotenv from 'dotenv';
 dotenv.config();
 
 import {
-    makeWASocket,
-    Browsers,
-    jidDecode,
-    makeInMemoryStore,
-    makeCacheableSignalKeyStore,
-    fetchLatestBaileysVersion,
-    DisconnectReason,
-    useMultiFileAuthState,
-    getAggregateVotesInPollMessage
+  makeWASocket,
+  fetchLatestBaileysVersion,
+  DisconnectReason,
+  useMultiFileAuthState
 } from '@whiskeysockets/baileys';
-import { Handler, Callupdate, GroupUpdate } from './event/index.js';
-import { Boom } from '@hapi/boom';
+
 import express from 'express';
 import pino from 'pino';
 import fs from 'fs';
-import NodeCache from 'node-cache';
 import path from 'path';
 import chalk from 'chalk';
-import { writeFile } from 'fs/promises';
-import moment from 'moment-timezone';
-import axios from 'axios';
-import fetch from 'node-fetch';
-import * as os from 'os';
-import config from '../config.cjs';
-import pkg from '../lib/autoreact.cjs';
-const { emojis, doReact } = pkg;
+import { File } from 'megajs';
+import { fileURLToPath } from 'url';
 
-const sessionName = "session";
+import config from './config.cjs';
+import autoreact from './lib/autoreact.cjs';
+import { Handler, Callupdate, GroupUpdate } from './event/index.js';
+
+const { emojis, doReact } = autoreact;
 const app = express();
-const orange = chalk.bold.hex("#FFA500");
-const lime = chalk.bold.hex("#32CD32");
-let useQR;
-let isSessionPutted;
+let useQR = false;
 let initialConnection = true;
+
 const PORT = process.env.PORT || 3000;
+const MAIN_LOGGER = pino({ timestamp: () => `,"time":"${new Date().toJSON()}"` });
+const logger = MAIN_LOGGER.child({ level: 'trace' });
 
-const MAIN_LOGGER = pino({
-    timestamp: () => `,"time":"${new Date().toJSON()}"`
-});
-const logger = MAIN_LOGGER.child({});
-logger.level = "trace";
-
-const msgRetryCounterCache = new NodeCache();
-
-const store = makeInMemoryStore({
-    logger: pino().child({
-        level: 'silent',
-        stream: 'store'
-    })
-});
-
-const __filename = new URL(import.meta.url).pathname;
+const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-
 const sessionDir = path.join(__dirname, 'session');
 const credsPath = path.join(sessionDir, 'creds.json');
 
-if (!fs.existsSync(sessionDir)) {
-    fs.mkdirSync(sessionDir, { recursive: true });
-}
+if (!fs.existsSync(sessionDir)) fs.mkdirSync(sessionDir, { recursive: true });
 
 async function downloadSessionData() {
-    if (!config.SESSION_ID) {
-        console.error('Please add your session to SESSION_ID env !!');
-        process.exit(1);
-    }
-    const sessdata = config.SESSION_ID.split("Ethix-MD&")[1];
-    const url = `https://pastebin.com/raw/${sessdata}`;
-    try {
-        const response = await axios.get(url);
-        const data = typeof response.data === 'string' ? response.data : JSON.stringify(response.data);
-        await fs.promises.writeFile(credsPath, data);
-        console.log("🔒 Session Successfully Loaded !!");
-    } catch (error) {
-        console.error('Failed to download session data:', error);
-        process.exit(1);
-    }
-}
+  console.log("Debug SESSION_ID:", config.SESSION_ID);
+  if (!config.SESSION_ID) return console.error("❌ Please add your session to SESSION_ID env !!");
 
-if (!fs.existsSync(credsPath)) {
-    downloadSessionData();
+  const sessionRaw = config.SESSION_ID.split("MEGALODON~MD~")[1];
+  if (!sessionRaw || !sessionRaw.includes('#')) {
+    return console.error("❌ Invalid SESSION_ID format!");
+  }
+
+  const [fileId, key] = sessionRaw.split('#');
+  try {
+    console.log("🔄 Downloading Session...");
+    const megaFile = File.fromURL(`https://mega.nz/file/${fileId}#${key}`);
+    const data = await new Promise((res, rej) =>
+      megaFile.download((err, file) => (err ? rej(err) : res(file)))
+    );
+    await fs.promises.writeFile(credsPath, data);
+    console.log("🔒 Session Successfully Loaded !!");
+    return true;
+  } catch (err) {
+    console.error("❌ Failed to download session:", err);
+    return false;
+  }
 }
 
 async function start() {
-    try {
-        const { state, saveCreds } = await useMultiFileAuthState(sessionDir);
-        const { version, isLatest } = await fetchLatestBaileysVersion();
-        console.log(`🤖 Ethix-MD using WA v${version.join('.')}, isLatest: ${isLatest}`);
-        
-        const Matrix = makeWASocket({
-            version,
-            logger: pino({ level: 'silent' }),
-            printQRInTerminal: true,
-            browser: ["Ethix-MD", "safari", "3.3"],
-            auth: state,
-            getMessage: async (key) => {
-                if (store) {
-                    const msg = await store.loadMessage(key.remoteJid, key.id);
-                    return msg.message || undefined;
-                }
-                return { conversation: "Ethix-MD Nonstop Testing" };
+  try {
+    const { state, saveCreds } = await useMultiFileAuthState(sessionDir);
+    const { version, isLatest } = await fetchLatestBaileysVersion();
+    console.log(`🤖 Bot using WA v${version.join('.')} (Latest: ${isLatest})`);
+
+    const sock = makeWASocket({
+      version,
+      logger: pino({ level: 'silent' }),
+      printQRInTerminal: useQR,
+      browser: ['MEGALODON-MD', 'Safari', '3.3'],
+      auth: state,
+      getMessage: async key => ({
+        conversation: 'MEGALODON-MD WhatsApp Bot'
+      })
+    });
+
+    sock.ev.on('connection.update', async ({ connection, lastDisconnect }) => {
+      if (connection === 'close') {
+        if (lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut) start();
+      } else if (connection === 'open') {
+        if (initialConnection) {
+          console.log(chalk.green("✅ MEGALODON-MD is now online!"));
+          await sock.sendMessage(sock.user.id, {
+            image: { url: 'https://files.catbox.moe/e1k73u.jpg' },
+            caption: `✅ Connected as ${sock.user.name || sock.user.id}`,
+            contextInfo: {
+              externalAdReply: {
+                title: "MEGALODON-MD",
+                body: "ᴘᴏᴡᴇʀᴇᴅ ʙʏ ᴅʏʙʏ ᴛᴇᴄʜ",
+                thumbnailUrl: "https://files.catbox.moe/xc6eca.jpg",
+                sourceUrl: "https://whatsapp.com/channel/0029VbAdcIXJP216dKW1253g",
+                mediaType: 1,
+                renderLargerThumbnail: false
+              }
             }
-        });
-
-        Matrix.ev.on('connection.update', (update) => {
-            const { connection, lastDisconnect } = update;
-            if (connection === 'close') {
-                if (lastDisconnect.error.output.statusCode !== DisconnectReason.loggedOut) {
-                    start();
-                }
-            } else if (connection === 'open') {
-                if (initialConnection) {
-                    console.log(chalk.green("😃🇸​​🇮​​🇱​​🇻​​🇦​ ​🇪​​🇹​​🇭​​🇮​​🇽​ Integration Successful️ ✅"));
-                    Matrix.sendMessage(Matrix.user.id, { text: `😃🇸​​🇮​​🇱​​🇻​​🇦​ ​🇪​​🇹​​🇭​​🇮​​🇽​ Integration Successful️ ✅` });
-                    initialConnection = false;
-                } else {
-                    console.log(chalk.blue("♻️ Connection reestablished after restart."));
-                }
-            }
-        });
-
-        Matrix.ev.on('creds.update', saveCreds);
-
-        Matrix.ev.on("messages.upsert", async chatUpdate => await Handler(chatUpdate, Matrix, logger));
-        Matrix.ev.on("call", async (json) => await Callupdate(json, Matrix));
-        Matrix.ev.on("group-participants.update", async (messag) => await GroupUpdate(Matrix, messag));
-
-        if (config.MODE === "public") {
-            Matrix.public = true;
-        } else if (config.MODE === "private") {
-            Matrix.public = false;
+          });
+          initialConnection = false;
+        } else {
+          console.log(chalk.blue("♻️ Connection reestablished."));
         }
+      }
+    });
 
-        Matrix.ev.on('messages.upsert', async (chatUpdate) => {
-            try {
-                const mek = chatUpdate.messages[0];
-                if (!mek.key.fromMe && config.AUTO_REACT) {
-                    console.log(mek);
-                    if (mek.message) {
-                        const randomEmoji = emojis[Math.floor(Math.random() * emojis.length)];
-                        await doReact(randomEmoji, mek, Matrix);
-                    }
-                }
-            } catch (err) {
-                console.error('Error during auto reaction:', err);
-            }
-        });
-    } catch (error) {
-        console.error('Critical Error:', error);
-        process.exit(1);
-    }
+    sock.ev.on('creds.update', saveCreds);
+    sock.ev.on('messages.upsert', msg => Handler(msg, sock, logger));
+    sock.ev.on('call', call => Callupdate(call, sock));
+    sock.ev.on('group-participants.update', update => GroupUpdate(sock, update));
+
+    if (config.MODE === 'public') sock.public = true;
+    else sock.public = false;
+
+    // Auto react
+    sock.ev.on('messages.upsert', async msg => {
+      try {
+        const m = msg.messages[0];
+        if (!m.key.fromMe && config.AUTO_REACT && m.message) {
+          const emoji = emojis[Math.floor(Math.random() * emojis.length)];
+          await doReact(emoji, m, sock);
+        }
+      } catch (err) {
+        console.error("Auto react error:", err);
+      }
+    });
+
+  } catch (err) {
+    console.error("Critical Error:", err);
+    process.exit(1);
+  }
 }
 
-start();
+async function init() {
+  if (fs.existsSync(credsPath)) {
+    console.log("🔒 Session file found, starting...");
+    await start();
+  } else {
+    const downloaded = await downloadSessionData();
+    if (downloaded) {
+      console.log("✅ Session downloaded, starting bot...");
+      await start();
+    } else {
+      console.log("❌ No session found or invalid. Showing QR...");
+      useQR = true;
+      await start();
+    }
+  }
+}
 
+init();
+
+// Web server
+app.use(express.static(path.join(__dirname, "mydata")));
 app.get('/', (req, res) => {
-    res.send('🇸​​🇮​​🇱​​🇻​​🇦​ ​🇪​​🇹​​🇭​​🇮​​🇽​ hello universe!');
+  res.sendFile(path.join(__dirname, "mydata", "index.html"));
 });
-
-app.listen(PORT, () => {
-    console.log(`Server is running on port ${PORT}`);
-});
+app.listen(PORT, () => console.log(`🌐 Server running on http://localhost:${PORT}`));
